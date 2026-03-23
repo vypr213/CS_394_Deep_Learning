@@ -6,8 +6,9 @@ import numpy as np
 import torch
 import torch.utils.tensorboard as tb
 
-from .models import ClassificationLoss, load_model, save_model
-from .utils import load_data
+from .models import load_model, save_model
+from .datasets.road_dataset import load_data
+from .metrics import DetectionMetric
 
 
 def train(
@@ -19,6 +20,8 @@ def train(
     seed: int = 2024,
     **kwargs,
 ):
+    metric_computer = DetectionMetric()
+
     if torch.cuda.is_available():
         device = torch.device("cuda")
     elif torch.backends.mps.is_available() and torch.backends.mps.is_built():
@@ -40,11 +43,12 @@ def train(
     model = model.to(device)
     model.train()
 
-    train_data = load_data("classification_data/train", shuffle=True, batch_size=batch_size, num_workers=2)
-    val_data = load_data("classification_data/val", shuffle=False)
+    train_data = load_data("drive_data/train", shuffle=True, batch_size=batch_size, num_workers=0)
+    val_data = load_data("drive_data/val", shuffle=False)
 
     # create loss function and optimizer
-    loss_func = ClassificationLoss()
+    loss_func_1 = torch.nn.CrossEntropyLoss()
+    loss_func_2 = torch.nn.L1Loss() # Make it L2 loss for regression
     optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9)
 
     global_step = 0
@@ -58,13 +62,27 @@ def train(
 
         model.train()
 
-        for img, label in train_data:
-            img, label = img.to(device), label.to(device)
+        for batch in train_data:
+            batch = {k: v.to(device)
+                        if isinstance(v, torch.Tensor)
+                        else v for k, v in batch.items()}
+
+            img        = batch["image"]
+            seg_labels = batch["track"]
+            depth      = batch["depth"]
 
             # TODO: implement training step
-            pred = model(img)
+            pred_segs, pred_depth = model(img)
 
-            loss_val = loss_func(pred, label)
+            # print(img.shape)
+            # print(pred_segs.shape, pred_segs.argmax(dim=1).shape, seg_labels.shape)
+            # print(pred_depth.shape, depth.shape)
+            loss_1 = loss_func_1(pred_segs, seg_labels)
+            loss_2 = loss_func_2(pred_depth, depth)
+
+            # print(loss_1.shape, loss_2.shape, loss_1, loss_2)
+
+            loss_val = loss_1 + loss_2
 
             optimizer.zero_grad()
             loss_val.backward()
@@ -72,9 +90,6 @@ def train(
 
             logger.add_scalar("train_loss", loss_val, global_step)
 
-            train_acc = (pred.argmax(dim=1).type_as(label) == label).float()
-            metrics["train_acc"].append(train_acc)
-            # raise NotImplementedError("Training step not implemented")
 
             global_step += 1
 
@@ -82,29 +97,39 @@ def train(
         with torch.inference_mode():
             model.eval()
 
-            for img, label in val_data:
-                img, label = img.to(device), label.to(device)
+            for batch in val_data:
+                batch = {k: v.to(device)
+                            if isinstance(v, torch.Tensor)
+                            else v for k, v in batch.items()}
+
+                img        = batch["image"]
+                seg_labels = batch["track"]
+                depth      = batch["depth"]
+
 
                 # TODO: compute validation accuracy
-                pred = model(img)
-                val_acc = (pred.argmax(dim=1).type_as(label) == label).float()
-                metrics["val_acc"].append(val_acc)
+                val_segs, val_depth = model.predict(img)
+
+                metric_computer.add(val_segs, seg_labels,
+                                    val_depth, depth)
+
                 # raise NotImplementedError("Validation accuracy not implemented")
 
         # log average train and val accuracy to tensorboard
-        epoch_train_acc = torch.cat(metrics["train_acc"]).mean()
-        epoch_val_acc = torch.cat(metrics["val_acc"]).mean()
+        # epoch_train_acc = torch.cat(metrics["train_acc"]).mean()
+        # epoch_val_acc = torch.cat(metrics["val_acc"]).mean()
 
-        logger.add_scalar("train_accuracy", epoch_train_acc, global_step)
-        logger.add_scalar("val_accuracy",   epoch_val_acc,   global_step)
+        # logger.add_scalar("train_accuracy", epoch_train_acc, global_step)
+        # logger.add_scalar("val_accuracy",   epoch_val_acc,   global_step)
         # raise NotImplementedError("Logging not implemented")
 
         # print on first, last, every 10th epoch
         if epoch == 0 or epoch == num_epoch - 1 or (epoch + 1) % 10 == 0:
             print(
                 f"Epoch {epoch + 1:2d} / {num_epoch:2d}: "
-                f"train_acc={epoch_train_acc:.4f} "
-                f"val_acc={epoch_val_acc:.4f}"
+                f"loss={loss_val}"
+                # f"train_acc={epoch_train_acc:.4f} "
+                # f"val_acc={epoch_val_acc:.4f}"
             )
 
     # save and overwrite the model in the root directory for grading

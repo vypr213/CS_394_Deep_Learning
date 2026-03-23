@@ -104,10 +104,54 @@ class Classifier(nn.Module):
 
 
 class Detector(torch.nn.Module):
+    class DownBlock(nn.Module):
+        def __init__(self, in_channels, out_channels, stride):
+            super().__init__()
+
+            kernel_size = 3
+            padding = (kernel_size - 1)//2
+
+            self.model = torch.nn.Sequential(
+                torch.nn.Conv2d(in_channels, out_channels,
+                                kernel_size, stride, padding),
+
+                torch.nn.ReLU(),
+
+                torch.nn.Conv2d(out_channels, out_channels,
+                                kernel_size, stride=1, padding=padding),
+                torch.nn.ReLU(),
+                )
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            return self.model(x)
+
+    class UpBlock(nn.Module):
+        def __init__(self, in_channels, out_channels, stride=2):
+            super().__init__()
+
+            kernel_size = 3
+            padding = (kernel_size - 1)//2
+
+            self.model = torch.nn.Sequential(
+                torch.nn.ConvTranspose2d(in_channels,
+                                         out_channels,
+                                         3,
+                                         stride=stride,
+                                         padding=1,
+                                         output_padding=1),
+
+
+                torch.nn.ReLU())
+
+        def forward(self, x: torch.Tensor) -> torch.Tensor:
+            return self.model(x)
+
+
     def __init__(
         self,
         in_channels: int = 3,
         num_classes: int = 3,
+        num_blocks: int = 2
     ):
         """
         A single model that performs segmentation and depth regression
@@ -122,7 +166,37 @@ class Detector(torch.nn.Module):
         self.register_buffer("input_std", torch.as_tensor(INPUT_STD))
 
         # TODO: implement
-        pass
+        cnn_layers = [
+                torch.nn.Conv2d(in_channels, 64,
+                                kernel_size=11, stride=2, padding=5),
+                torch.nn.ReLU()
+        ]
+
+        c_in = 64
+        for _ in range(num_blocks):
+            c_out = c_in * 2
+            cnn_layers.append(self.DownBlock(c_in, c_out, stride=2))
+            c_in = c_out
+
+        for _ in range(num_blocks):
+            c_out = c_in // 2
+            cnn_layers.append(self.UpBlock(c_in, c_out, stride=2))
+            c_in = c_out
+
+        c_out = c_in // 2
+        cnn_layers.append(self.UpBlock(c_in, c_out, stride=2))
+        c_in = c_out
+        
+        self.conv_net = torch.nn.Sequential(*cnn_layers)
+
+        # Logits layer
+        self.seg_layer = torch.nn.Conv2d(c_in, 3, 
+                                         kernel_size=3, stride=1, padding=1)
+
+        # Depth prediction layer
+        self.depth_layer = torch.nn.Conv2d(c_in, 1, 
+                                         kernel_size=3, stride=1, padding=1)
+
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         """
@@ -141,8 +215,10 @@ class Detector(torch.nn.Module):
         z = (x - self.input_mean[None, :, None, None]) / self.input_std[None, :, None, None]
 
         # TODO: replace with actual forward pass
-        logits = torch.randn(x.size(0), 3, x.size(2), x.size(3))
-        raw_depth = torch.rand(x.size(0), x.size(2), x.size(3))
+        activations = self.conv_net(z)
+
+        logits = self.seg_layer(activations)
+        raw_depth = self.depth_layer(activations).squeeze()
 
         return logits, raw_depth
 
@@ -242,19 +318,21 @@ def debug_model(batch_size: int = 1):
     this function is NOT used for grading
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    sample_batch = torch.rand(batch_size, 3, 64, 64).to(device)
+    sample_batch = torch.rand(batch_size, 3, 96, 128).to(device)
 
     print(f"Input shape: {sample_batch.shape}")
 
-    model = load_model("classifier", in_channels=3, num_classes=6).to(device)
+    # model = load_model("classifier", in_channels=3, num_classes=6).to(device)
+    model = load_model("detector", in_channels=3, num_classes=6).to(device)
 
     print("My Model:")
     print(model)
 
-    output = model(sample_batch)
+    logits, depth = model(sample_batch)
 
     # should output logits (b, num_classes)
-    print(f"Output shape: {output.shape}")
+    print(f"Output shape: {logits.shape}")
+    print(f"Output shape: {depth.shape}")
 
 
 if __name__ == "__main__":
