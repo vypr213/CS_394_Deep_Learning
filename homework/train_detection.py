@@ -20,7 +20,11 @@ def train(
     seed: int = 2024,
     **kwargs,
 ):
-    metric_computer = DetectionMetric()
+    train_metric_computer = DetectionMetric()
+    val_metric_computer = DetectionMetric()
+
+    train_metrics = None
+    val_metrics = None
 
     if torch.cuda.is_available():
         device = torch.device("cuda")
@@ -43,7 +47,11 @@ def train(
     model = model.to(device)
     model.train()
 
-    train_data = load_data("drive_data/train", shuffle=True, batch_size=batch_size, num_workers=0)
+    train_data = load_data("drive_data/train",
+                           shuffle=True,
+                           batch_size=batch_size,
+                           num_workers=2)
+
     val_data = load_data("drive_data/val", shuffle=False)
 
     # create loss function and optimizer
@@ -90,6 +98,9 @@ def train(
 
             logger.add_scalar("train_loss", loss_val, global_step)
 
+            train_metric_computer.add(pred_segs.argmax(dim=1), seg_labels,
+                                                      pred_depth, depth)
+
 
             global_step += 1
 
@@ -110,8 +121,8 @@ def train(
                 # TODO: compute validation accuracy
                 val_segs, val_depth = model.predict(img)
 
-                metric_computer.add(val_segs, seg_labels,
-                                    val_depth, depth)
+                val_metric_computer.add(val_segs, seg_labels,
+                                                      val_depth, depth)
 
                 # raise NotImplementedError("Validation accuracy not implemented")
 
@@ -125,9 +136,29 @@ def train(
 
         # print on first, last, every 10th epoch
         if epoch == 0 or epoch == num_epoch - 1 or (epoch + 1) % 10 == 0:
+            train_metrics = train_metric_computer.compute()
+            val_metrics = val_metric_computer.compute()
+            train_acc          = train_metrics["accuracy"]
+            train_iou          = train_metrics["iou"]
+            train_depth_err    = train_metrics["abs_depth_error"]
+            train_tp_depth_err = train_metrics["tp_depth_error"]
+
+            val_acc          = val_metrics["accuracy"]
+            val_iou          = val_metrics["iou"]
+            val_depth_err    = val_metrics["abs_depth_error"]
+            val_tp_depth_err = val_metrics["tp_depth_error"]
+
             print(
                 f"Epoch {epoch + 1:2d} / {num_epoch:2d}: "
-                f"loss={loss_val}"
+                f"train_acc={train_acc:.4f} "
+                f"train_iou={train_iou:.4f} "
+                f"train_depth_err={train_depth_err:.4f} "
+                f"train_tp_depth_err={train_tp_depth_err:.4f} "
+                f"val_acc={val_acc:.4f} "
+                f"val_iou={val_iou:.4f} "
+                f"val_depth_err={val_depth_err:.4f} "
+                f"val_tp_depth_err={val_tp_depth_err:.4f}"
+
                 # f"train_acc={epoch_train_acc:.4f} "
                 # f"val_acc={epoch_val_acc:.4f}"
             )
