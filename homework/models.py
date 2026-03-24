@@ -114,12 +114,13 @@ class Detector(torch.nn.Module):
             self.model = torch.nn.Sequential(
                 torch.nn.Conv2d(in_channels, out_channels,
                                 kernel_size, stride, padding),
-
                 torch.nn.ReLU(),
+                torch.nn.BatchNorm2d(out_channels),
 
                 torch.nn.Conv2d(out_channels, out_channels,
                                 kernel_size, stride=1, padding=padding),
                 torch.nn.ReLU(),
+                torch.nn.BatchNorm2d(out_channels),
                 )
 
         def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -166,35 +167,44 @@ class Detector(torch.nn.Module):
         self.register_buffer("input_std", torch.as_tensor(INPUT_STD))
 
         # TODO: implement
-        cnn_layers = [
+        self.first_layer = torch.nn.Sequential(
                 torch.nn.Conv2d(in_channels, 64,
                                 kernel_size=11, stride=2, padding=5),
                 torch.nn.ReLU()
-        ]
+        )
 
-        c_in = 64
-        for _ in range(num_blocks):
-            c_out = c_in * 2
-            cnn_layers.append(self.DownBlock(c_in, c_out, stride=2))
-            c_in = c_out
+        self.down_block_1 = self.DownBlock(64, 128, stride=2)
+        self.down_block_2 = self.DownBlock(128, 256, stride=2)
 
-        for _ in range(num_blocks):
-            c_out = c_in // 2
-            cnn_layers.append(self.UpBlock(c_in, c_out, stride=2))
-            c_in = c_out
+        self.up_block_2 = self.UpBlock(256, 128, stride=2)
+        self.up_block_1 = self.UpBlock(128, 64, stride=2)
 
-        c_out = c_in // 2
-        cnn_layers.append(self.UpBlock(c_in, c_out, stride=2))
-        c_in = c_out
-        
-        self.conv_net = torch.nn.Sequential(*cnn_layers)
+        self.last_layer = self.UpBlock(64, 32, stride=2)
+
+       # 
+       #  c_in = 64
+       #  for _ in range(num_blocks):
+       #      c_out = c_in * 2
+       #      cnn_layers.append(self.DownBlock(c_in, c_out, stride=2))
+       #      c_in = c_out
+       # 
+       #  for _ in range(num_blocks):
+       #      c_out = c_in // 2
+       #      cnn_layers.append(self.UpBlock(c_in, c_out, stride=2))
+       #      c_in = c_out
+       # 
+       #  c_out = c_in // 2
+       #  cnn_layers.append(self.UpBlock(c_in, c_out, stride=2))
+       #  c_in = c_out
+       #  
+       #  self.conv_net = torch.nn.Sequential(*cnn_layers)
 
         # Logits layer
-        self.seg_layer = torch.nn.Conv2d(c_in, 3, 
+        self.seg_layer = torch.nn.Conv2d(32, 3, 
                                          kernel_size=3, stride=1, padding=1)
 
         # Depth prediction layer
-        self.depth_layer = torch.nn.Conv2d(c_in, 1, 
+        self.depth_layer = torch.nn.Conv2d(32, 1, 
                                          kernel_size=3, stride=1, padding=1)
 
 
@@ -215,7 +225,14 @@ class Detector(torch.nn.Module):
         z = (x - self.input_mean[None, :, None, None]) / self.input_std[None, :, None, None]
 
         # TODO: replace with actual forward pass
-        activations = self.conv_net(z)
+        # activations = self.conv_net(z)
+
+        f = self.first_layer(z)
+        d1 = self.down_block_1(f)
+        d2 = self.down_block_2(d1)
+        u2 = self.up_block_2(d2) + d1
+        u1 = self.up_block_1(u2) + f
+        activations  = self.last_layer(u1)
 
         logits = self.seg_layer(activations)
         raw_depth = self.depth_layer(activations).squeeze()

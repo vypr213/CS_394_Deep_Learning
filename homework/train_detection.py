@@ -15,7 +15,8 @@ def train(
     exp_dir: str = "logs",
     model_name: str = "linear",
     num_epoch: int = 50,
-    lr: float = 1e-3,
+    # lr: float = 1e-3,
+    lr: float = 0.005,
     batch_size: int = 128,
     seed: int = 2024,
     **kwargs,
@@ -57,7 +58,8 @@ def train(
     # create loss function and optimizer
     loss_func_1 = torch.nn.CrossEntropyLoss()
     loss_func_2 = torch.nn.L1Loss() # Make it L2 loss for regression
-    optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9)
+    # optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=1e-4)
 
     global_step = 0
     metrics = {"train_acc": [], "val_acc": []}
